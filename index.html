@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>T-Rex — Dino Runner (Sprites + Background)</title>
+  <style>
+    :root{
+      --fg-day:#222;
+      --fg-night:#fff;
+    }
+    html,body{height:100%;margin:0;font-family:Arial, Helvetica, sans-serif;background:#000;color:var(--fg-day)}
+    .wrap{width:1000px;max-width:96vw;margin:18px auto;padding:12px;background:#fff;border-radius:10px;box-shadow:0 8px 20px rgba(0,0,0,0.06)}
+    h1{font-size:16px;margin:0 0 8px}
+    #hud{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;color:var(--fg-day)}
+    #gameCanvas{
+      display:block;
+      width:100%;
+      height:auto;
+      border-radius:6px;
+      image-rendering:pixelated;
+    }
+    #controls{margin-top:10px;display:flex;gap:8px;align-items:center}  
+    button{padding:8px 10px;border-radius:6px;border:0;background:#efefef;cursor:pointer}
+    #overlay{position:absolute;display:flex;align-items:center;justify-content:center;top:0;left:0;width:100%;height:100%;font-size:20px;background:rgba(255,255,255,0.9);border-radius:6px;}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div id="hud">
+      <h1>TOFU — Dino Runner</h1>
+      <div>
+        Score: <span id="score">0</span> &nbsp; | High: <span id="high">0</span>
+      </div>
+      <div>
+        <button id="muteBtn">🔊</button>
+      </div>
+    </div>
+
+    <div style="position:relative">
+      <canvas id="gameCanvas" width="1000" height="400"></canvas>
+      <div id="overlay">Press Space / ↑ or Tap to Start</div>
+    </div>
+
+    <div id="controls">
+      <button id="restartBtn">Restart (R)</button>
+      <div style="color:#666;font-size:13px">Controls: Space / ↑ jump · ↓ duck · R restart</div>
+    </div>
+  </div>
+
+  <script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const scoreEl = document.getElementById('score');
+const highEl = document.getElementById('high');
+const overlay = document.getElementById('overlay');
+const muteBtn = document.getElementById('muteBtn');
+const restartBtn = document.getElementById('restartBtn');
+let GAME_W = canvas.width, GAME_H = canvas.height;
+
+let speedBase = 3; // Start slower
+let speed = speedBase;
+let gravity = 0.4; // Much gentler gravity for slower falls
+let jumpVel = -11; // Slightly adjust jump to match new gravity
+let score = 0;
+let highScore = Number(localStorage.getItem('trex_high') || 0);
+let started = false;
+let gameOver = false;
+let isMuted = false;
+let night = false;
+let spawnTimer = 0;
+let cloudTimer = 0;
+let frame = 0;
+let lastCycle = 0;
+let lastScoreCheck = 0; // Fixed: Track last score for sound
+
+highEl.textContent = highScore;
+
+// Create simple colored rectangles as fallback sprites
+function createFallbackSprite(width, height, color) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, width, height);
+  return canvas;
+}
+
+function loadImage(src){
+  return new Promise((resolve)=>{
+    const img = new Image();
+    img.onload=()=>resolve(img);
+    img.onerror=()=>{
+      console.warn(`Failed to load ${src}, using fallback`);
+      resolve(null);
+    };
+    img.src=src;
+  });
+}
+
+const sprites = {
+  dino: {},
+  cactus: {},
+  ptera: {},
+  bg: {},
+  weapons: {   // 🔥 add weapons container here
+    fire: null,
+    gun: null,
+    axe: null,
+    sword: null,
+    bomb: null,
+    spear: null,
+    hammer: null,
+    rifle: null,
+    arrow: null,
+    grenade: null
+  }
+};
+
+// Initialize with fallback sprites
+sprites.dino.idle = createFallbackSprite(44, 42, '#666');
+sprites.dino.run = [createFallbackSprite(44, 42, '#666'), createFallbackSprite(44, 42, '#777')];
+sprites.dino.duck = [createFallbackSprite(44, 22, '#666'), createFallbackSprite(44, 22, '#777')];
+sprites.dino.dead = createFallbackSprite(44, 42, '#f44');
+sprites.cactus.small = createFallbackSprite(20, 35, '#4a4');
+sprites.cactus.large = createFallbackSprite(30, 60, '#4a4');
+sprites.cactus.group = createFallbackSprite(60, 50, '#4a4');
+sprites.ptera.up = createFallbackSprite(46, 30, '#84f');
+sprites.ptera.down = createFallbackSprite(46, 30, '#84f');
+sprites.monster = createFallbackSprite(50, 60, '#f84');
+sprites.ground = createFallbackSprite(100, 20, '#ddd');
+sprites.cloud = createFallbackSprite(60, 40, '#eee');
+sprites.moon = createFallbackSprite(40, 40, '#ff8');
+sprites.sun = createFallbackSprite(40, 40, '#fa4');
+sprites.bg.day = createFallbackSprite(1000, 400, '#87CEEB');
+sprites.bg.night = createFallbackSprite(1000, 400, '#2c2c54');
+
+Promise.all([
+  loadImage("sprites/dino_idle.png"),
+  loadImage("sprites/dino_run1.png"),
+  loadImage("sprites/dino_run2.png"),
+  loadImage("sprites/dino_duck1.png"),
+  loadImage("sprites/dino_duck2.png"),
+  loadImage("sprites/dino_dead.png"),
+  loadImage("sprites/cactus_small.png"),
+  loadImage("sprites/cactus_large.png"),
+  loadImage("sprites/cactus_group.png"),
+  loadImage("sprites/ptera_up.png"),
+  loadImage("sprites/ptera_down.png"),
+  loadImage("sprites/monster.png"),
+  loadImage("sprites/ground.png"),
+  loadImage("sprites/cloud.png"),
+  loadImage("sprites/moon.png"),
+  loadImage("sprites/sun.png"),
+  loadImage("sprites/bg_day.png"),
+  loadImage("sprites/bg_night.png"),
+  loadImage("sprites/weapon_fire.png"),
+  loadImage("sprites/weapon_gun.png"),
+  loadImage("sprites/weapon_axe.png"),
+  loadImage("sprites/weapon_sword.png"),
+  loadImage("sprites/weapon_bomb.png"),
+  loadImage("sprites/weapon_spear.png"),
+  loadImage("sprites/weapon_hammer.png"),
+  loadImage("sprites/weapon_rifle.png"),
+  loadImage("sprites/weapon_arrow.png"),
+  loadImage("sprites/weapon_grenade.png"),
+
+]).then(images=>{
+  // Only replace fallbacks if images loaded successfully
+  if(images[0]) sprites.dino.idle = images[0];
+  if(images[1] && images[2]) sprites.dino.run = [images[1],images[2]];
+  if(images[3] && images[4]) sprites.dino.duck = [images[3],images[4]];
+  if(images[5]) sprites.dino.dead = images[5];
+  if(images[6]) sprites.cactus.small = images[6];
+  if(images[7]) sprites.cactus.large = images[7];
+  if(images[8]) sprites.cactus.group = images[8];
+  if(images[9]) sprites.ptera.up = images[9];
+  if(images[10]) sprites.ptera.down = images[10];
+  if(images[11]) sprites.monster = images[11];
+  if(images[12]) sprites.ground = images[12];
+  if(images[13]) sprites.cloud = images[13];
+  if(images[14]) sprites.moon = images[14];
+  if(images[15]) sprites.sun = images[15];
+  if(images[16]) sprites.bg.day = images[16];
+  if(images[17]) sprites.bg.night = images[17];
+  sprites.weapons.fire    = images[18];
+  sprites.weapons.gun     = images[19];
+  sprites.weapons.axe     = images[20];
+  sprites.weapons.sword   = images[21];
+  sprites.weapons.bomb    = images[22];
+  sprites.weapons.spear   = images[23];
+  sprites.weapons.hammer  = images[24];
+  sprites.weapons.rifle   = images[25];
+  sprites.weapons.arrow   = images[26];
+  sprites.weapons.grenade = images[27];
+
+
+  requestAnimationFrame(update);
+});
+
+// Fixed: More robust audio handling
+const audio = {};
+function createAudio(name) {
+  try {
+    const a = new Audio(`${name}.mp3`);
+    a.preload = 'auto';
+    a.volume = 0.3;
+    return a;
+  } catch(e) {
+    return null;
+  }
+}
+
+audio.jump = createAudio('jump');
+audio.hit = createAudio('hit');
+audio.score = createAudio('score');
+
+function playSound(name){ 
+  if(isMuted || !audio[name]) return; 
+  try {
+    audio[name].currentTime = 0; 
+    audio[name].play().catch(()=>{}); 
+  } catch(e) {}
+}
+
+muteBtn.addEventListener('click', ()=>{ isMuted=!isMuted; muteBtn.textContent=isMuted?'🔇':'🔊'; });
+restartBtn.addEventListener('click', restartGame);
+
+const dino = { 
+  x:70, 
+  y:GAME_H-60-42, 
+  w:44, 
+  h:42, 
+  vy:0, 
+  jumping:false, 
+  ducking:false,
+  draw(){
+    let sprite;
+    if (gameOver) sprite = sprites.dino.dead;
+    else if (this.ducking) sprite = sprites.dino.duck[Math.floor(frame/10)%2];
+    else if (!this.jumping) sprite = sprites.dino.run[Math.floor(frame/10)%2];
+    else sprite = sprites.dino.idle;
+    if(sprite) ctx.drawImage(sprite,this.x,this.y,this.w,this.h);
+  },
+  update(){
+    if(this.jumping){
+      this.vy+=gravity; 
+      this.y+=this.vy;
+      const groundY = GAME_H-60-(this.ducking?22:42);
+      if(this.y>=groundY){
+        this.y=groundY;
+        this.vy=0; 
+        this.jumping=false;
+      }
+    }
+  }
+};
+
+function dinoJump(){ 
+  if(!dino.jumping && !gameOver){ 
+    dino.jumping=true; 
+    dino.vy=jumpVel; 
+    playSound('jump'); 
+  } 
+}
+
+function dinoDuck(on){ 
+  if(dino.jumping || gameOver) return; 
+  const wasDucking = dino.ducking;
+  dino.ducking=!!on; 
+  
+  // Fixed: Smooth transition between ducking states
+  if(dino.ducking && !wasDucking) {
+    dino.h = 22;
+    dino.y = GAME_H-60-22;
+  } else if(!dino.ducking && wasDucking) {
+    dino.h = 42;
+    dino.y = GAME_H-60-42;
+  }
+}
+
+let obstacles=[]; let clouds=[];
+let powerups = [];
+let activePowerup = null;
+let powerupTimer = 0;
+
+// Powerup system
+class Powerup {
+  constructor(type) {
+    this.type = type || 'fire'; // fire, gun, axe
+    this.x = GAME_W + 20;
+    this.y = GAME_H - 60 - 40;
+    this.w = 30;
+    this.h = 30;
+    this.remove = false;
+    
+    // Different colors for different powerups
+    this.color = 
+  type === 'fire' ? '#ff4444' : 
+  type === 'gun' ? '#4444ff' : 
+  type === 'axe' ? '#44ff44' : 
+  type === 'sword' ? '#aaaaaa' : 
+  type === 'bomb' ? '#222222' : 
+  type === 'spear' ? '#996633' : 
+  type === 'hammer' ? '#555555' : 
+  type === 'rifle' ? '#0066cc' : 
+  type === 'arrow' ? '#228B22' : 
+  type === 'grenade' ? '#666600' : '#888';
+  } 
+  
+  update() {
+    this.x -= speed;
+    if(this.x + this.w < -50) this.remove = true;
+  }
+  
+  draw() {
+    ctx.fillStyle = this.color;
+    ctx.fillRect(this.x, this.y, this.w, this.h);
+    
+    // Draw icon text
+    ctx.fillStyle = '#fff';
+    ctx.font = '16px monospace';
+    const icon = 
+      this.type === 'fire' ? '🔥' :
+      this.type === 'gun' ? '🔫' :
+      this.type === 'axe' ? '🪓' :
+      this.type === 'sword' ? '⚔️' :
+      this.type === 'bomb' ? '💣' :
+      this.type === 'spear' ? '🗡️' :
+      this.type === 'hammer' ? '🔨' :
+      this.type === 'rifle' ? '🎯' :
+      this.type === 'arrow' ? '🏹' :
+      this.type === 'grenade' ? '🧨' : '?';
+
+    ctx.fillText(icon, this.x + 5, this.y + 20);
+  }
+}
+
+class Ob{ 
+  constructor(kind){ 
+    this.kind=kind||'cactus';
+    if(this.kind==='ptera'){ 
+      this.w=46; this.h=30; 
+      const heights=[GAME_H-60-30, GAME_H-60-60, GAME_H-60-90]; 
+      this.y=heights[Math.floor(Math.random()*heights.length)]; 
+    }
+    else if(this.kind==='monster'){ 
+      this.w=50; this.h=60; 
+      this.y=GAME_H-60-this.h; 
+    }
+    else if(this.kind==='cactus'){ 
+      this.w=20; this.h=35; 
+      this.y=GAME_H-60-this.h; 
+    }
+    else if(this.kind==='cactusLarge'){ 
+      this.w=30; this.h=60; 
+      this.y=GAME_H-60-this.h; 
+    }
+    else if(this.kind==='cactusGroup'){ 
+      this.w=60; this.h=50; 
+      this.y=GAME_H-60-this.h; 
+    }
+    this.x=GAME_W+20; 
+    this.remove=false;
+  }
+  update(){ 
+    this.x-=speed; 
+    if(this.x+this.w<-50) this.remove=true; 
+  }
+  draw(){
+    let sprite=null;
+    if(this.kind==='cactus') sprite=sprites.cactus.small;
+    else if(this.kind==='cactusLarge') sprite=sprites.cactus.large;
+    else if(this.kind==='cactusGroup') sprite=sprites.cactus.group;
+    else if(this.kind==='ptera') sprite=(frame%20<10)?sprites.ptera.up:sprites.ptera.down;
+    else if(this.kind==='monster') sprite=sprites.monster;
+    if(sprite) ctx.drawImage(sprite,this.x,this.y,this.w,this.h);
+  }
+}
+
+class Cloud{ 
+  constructor(){ 
+    this.x=GAME_W+10; 
+    this.y=30+Math.random()*80; 
+    this.w=60; 
+    this.h=40; 
+    this.speed=0.6+Math.random()*0.8; 
+    this.remove=false; 
+  }
+  update(){ 
+    this.x-=this.speed; 
+    if(this.x+this.w<-50) this.remove=true; 
+  }
+  draw(){ 
+    if(sprites.cloud) ctx.drawImage(sprites.cloud,this.x,this.y,this.w,this.h); 
+  }
+}
+
+function spawnPowerupIfNeeded() {
+  if(Math.random() < 0.001) { // Rare spawn
+    const types = ['fire', 'gun', 'axe', 'sword', 'bomb', 'spear', 'hammer', 'rifle', 'arrow', 'grenade'];
+    const type = types[Math.floor(Math.random() * types.length)];
+    powerups.push(new Powerup(type));
+  }
+}
+
+function checkPowerupCollection() {
+  const dbox = {x:dino.x+6, y:dino.y+4, w:dino.w-12, h:dino.h-8};
+  
+  for(let i = powerups.length - 1; i >= 0; i--) {
+    const p = powerups[i];
+    const pbox = {x:p.x, y:p.y, w:p.w, h:p.h};
+    
+    if(rectsOverlap(dbox, pbox)) {
+      activePowerup = p.type;
+      powerupTimer = 300; // 5 seconds at 60fps
+      powerups.splice(i, 1);
+      playSound('score'); // Reuse score sound for powerup
+    }
+  }
+}
+
+function updatePowerup() {
+  if(activePowerup && powerupTimer > 0) {
+    powerupTimer--;
+    if(powerupTimer <= 0) {
+      activePowerup = null;
+    }
+  }
+}
+
+function drawDinoWithWeapon() {
+  // Draw regular dino
+  let sprite;
+  if (gameOver) sprite = sprites.dino.dead;
+  else if (dino.ducking) sprite = sprites.dino.duck[Math.floor(frame/10)%2];
+  else if (!dino.jumping) sprite = sprites.dino.run[Math.floor(frame/10)%2];
+  else sprite = sprites.dino.idle;
+  if(sprite) ctx.drawImage(sprite,dino.x,dino.y,dino.w,dino.h);
+  
+  // Draw weapon effect
+  if(activePowerup && powerupTimer > 0) {
+    ctx.save();
+    if(activePowerup === 'fire') {
+      // Fire trail
+      ctx.fillStyle = `rgba(255, ${100 + Math.sin(frame/5) * 50}, 0, 0.7)`;
+      ctx.fillRect(dino.x + dino.w, dino.y + 10, 20, 20);
+      ctx.fillRect(dino.x + dino.w + 10, dino.y + 5, 15, 30);
+    } else if(activePowerup === 'gun') {
+      // Gun barrel
+      ctx.fillStyle = '#333';
+      ctx.fillRect(dino.x + dino.w - 5, dino.y + 15, 25, 5);
+      // Muzzle flash occasionally
+      if(frame % 20 < 3) {
+        ctx.fillStyle = '#ffff44';
+        ctx.fillRect(dino.x + dino.w + 15, dino.y + 10, 10, 15);
+      }
+    } else if(activePowerup === 'axe') {
+      // Spinning axe
+      ctx.translate(dino.x + dino.w + 10, dino.y + 20);
+      ctx.rotate(frame / 5);
+      ctx.fillStyle = '#8B4513';
+      ctx.fillRect(-15, -3, 30, 6);
+      ctx.fillStyle = '#C0C0C0';
+      ctx.fillRect(-20, -8, 10, 16);
+      ctx.fillRect(10, -8, 10, 16);
+    } else if(activePowerup === 'sword') {
+   // Sword slash
+   ctx.fillStyle = '#ccc';
+   ctx.fillRect(dino.x + dino.w, dino.y + 10, 30, 5);
+    } else if(activePowerup === 'bomb') {
+   // Bomb floating near dino
+   ctx.beginPath();
+   ctx.arc(dino.x + dino.w + 15, dino.y + 20, 12, 0, Math.PI*2);
+   ctx.fillStyle = '#000';
+   ctx.fill();
+    } else if(activePowerup === 'spear') {
+   // Spear forward
+   ctx.fillStyle = '#996633';
+   ctx.fillRect(dino.x + dino.w, dino.y + 15, 40, 3);
+    } else if(activePowerup === 'hammer') {
+   // Hammer head
+   ctx.fillStyle = '#555';
+   ctx.fillRect(dino.x + dino.w, dino.y, 25, 10);
+   ctx.fillStyle = '#964B00';
+   ctx.fillRect(dino.x + dino.w - 5, dino.y + 5, 8, 25);
+    } else if(activePowerup === 'rifle') {
+   // Rifle barrel
+   ctx.fillStyle = '#333';
+   ctx.fillRect(dino.x + dino.w - 5, dino.y + 20, 40, 5);
+    } else if(activePowerup === 'arrow') {
+   // Arrow shooting
+   ctx.fillStyle = '#228B22';
+   ctx.fillRect(dino.x + dino.w, dino.y + 20, 30, 2);
+    } else if(activePowerup === 'grenade') {
+   // Grenade next to dino
+   ctx.beginPath();
+   ctx.arc(dino.x + dino.w + 10, dino.y + 20, 10, 0, Math.PI*2);
+   ctx.fillStyle = '#666600';
+   ctx.fill();
+}
+
+    ctx.restore();
+    
+    // Destroy obstacles when powered up
+    for(let i = obstacles.length - 1; i >= 0; i--) {
+      const o = obstacles[i];
+      const weaponBox = {
+        x: dino.x + dino.w - 10,
+        y: dino.y,
+        w: 40,
+        h: dino.h
+      };
+      const obox = {x:o.x, y:o.y, w:o.w, h:o.h};
+      
+      if(rectsOverlap(weaponBox, obox)) {
+        obstacles.splice(i, 1);
+      }
+    }
+  }
+}
+
+function spawnObstacleIfNeeded(){
+  if(spawnTimer>0){ spawnTimer--; return; }
+  const level=Math.floor(score/500);
+  let chance=0.03+level*0.02; // Fixed: Reduced spawn rate slightly
+  if(chance>0.4) chance=0.4; // Fixed: Max spawn chance cap
+  
+  if(Math.random()<chance){
+    let kinds=['cactus','cactusLarge','cactusGroup'];
+    if(level>=1 && Math.random()<0.3) kinds.push('ptera');
+    if(level>=2 && Math.random()<0.2) kinds.push('monster');
+    let kind=kinds[Math.floor(Math.random()*kinds.length)];
+    obstacles.push(new Ob(kind));
+    spawnTimer=Math.max(30,80-level*5+Math.floor(Math.random()*40)); // Fixed: Better spacing
+  }
+}
+
+function spawnCloudIfNeeded(){ 
+  if(cloudTimer>0){ cloudTimer--; return; } 
+  if(Math.random()<0.2){ // Fixed: Reduced cloud spawn rate
+    clouds.push(new Cloud()); 
+    cloudTimer=100+Math.floor(Math.random()*150);
+  } 
+}
+
+function rectsOverlap(a,b){ 
+  return !(a.x+a.w<=b.x||a.x>=b.x+b.w||a.y+a.h<=b.y||a.y>=b.y+b.h); 
+}
+
+function checkCollision(){ 
+  // Fixed: Better collision boxes
+  const dbox={
+    x:dino.x+6,
+    y:dino.y+4,
+    w:dino.w-12,
+    h:dino.h-8
+  }; 
+  
+  for(const o of obstacles){ 
+    const obox={
+      x:o.x+2,
+      y:o.y+2, 
+      w:o.w-4,
+      h:o.h-4
+    }; 
+    if(rectsOverlap(dbox,obox)){ 
+      return true; 
+    } 
+  } 
+  return false; 
+}
+
+function resetGame(){ 
+  obstacles=[]; 
+  clouds=[]; 
+  powerups=[];
+  activePowerup=null;
+  powerupTimer=0;
+  score=0; 
+  speed=speedBase; 
+  started=true; 
+  gameOver=false; 
+  spawnTimer=60; // Fixed: Initial spawn delay
+  cloudTimer=0; 
+  night=false; 
+  lastCycle=0; 
+  lastScoreCheck=0; // Fixed: Reset score check
+  dino.jumping=false; // Fixed: Reset dino state
+  dino.ducking=false;
+  dino.vy=0;
+  dino.y=GAME_H-60-42;
+  dino.h=42;
+  scoreEl.textContent=0; 
+  overlay.style.display='none'; 
+}
+
+function endGame(){ 
+  gameOver=true; 
+  started=false; 
+  overlay.style.display='flex'; 
+  overlay.textContent=`Game Over — Score: ${Math.floor(score)} — Press R / Tap to Restart`; 
+  playSound('hit'); 
+  
+  const finalScore = Math.floor(score);
+  if(finalScore>highScore){ 
+    highScore=finalScore; 
+    localStorage.setItem('trex_high',highScore); 
+    highEl.textContent=highScore; 
+  } 
+}
+
+function restartGame(){ resetGame(); }
+
+// Fixed: Better key handling with preventDefault
+window.addEventListener('keydown',(e)=>{ 
+  if(!started&&(e.code==='Space'||e.code==='ArrowUp'||e.code==='KeyW')){ 
+    e.preventDefault();
+    resetGame(); 
+    return; 
+  } 
+  if(e.code==='Space'||e.code==='ArrowUp'||e.code==='KeyW'){ 
+    e.preventDefault();
+    if(!gameOver) dinoJump(); 
+  } 
+  if(e.code==='ArrowDown'||e.code==='KeyS'){ 
+    e.preventDefault();
+    dinoDuck(true); 
+  } 
+  if(e.code==='KeyR'){ 
+    e.preventDefault();
+    restartGame(); 
+  } 
+});
+
+window.addEventListener('keyup',(e)=>{ 
+  if(e.code==='ArrowDown'||e.code==='KeyS') {
+    e.preventDefault();
+    dinoDuck(false); 
+  }
+});
+
+canvas.addEventListener('touchstart',(e)=>{ 
+  e.preventDefault(); 
+  if(!started){ 
+    resetGame(); 
+  } else if(gameOver){ 
+    restartGame(); 
+  } else {
+    dinoJump(); 
+  }
+});
+
+canvas.addEventListener('click',()=>{ 
+  if(!started){ 
+    resetGame(); 
+  } else if(gameOver){ 
+    restartGame(); 
+  } else {
+    dinoJump(); 
+  }
+});
+
+function update(){ 
+  frame++; 
+  
+  if(!started||gameOver){ 
+    requestAnimationFrame(update); 
+    return; 
+  }
+  
+  // Fixed: Smoother, gradual speed increase
+  speed = speedBase + Math.min(4, score/800); // Slower progression, max +4 speed
+  
+  spawnObstacleIfNeeded(); 
+  spawnCloudIfNeeded();
+  spawnPowerupIfNeeded();
+  
+  for(const c of clouds) c.update(); 
+  clouds=clouds.filter(c=>!c.remove);
+  
+  for(const o of obstacles) o.update(); 
+  obstacles=obstacles.filter(o=>!o.remove);
+  
+  for(const p of powerups) p.update();
+  powerups=powerups.filter(p=>!p.remove);
+  
+  dino.update();
+  checkPowerupCollection();
+  updatePowerup();
+  
+  if(checkCollision()){ 
+    endGame(); 
+    requestAnimationFrame(update);
+    return;
+  }
+  
+  // Fixed: Better score increment
+  score += 0.1 * (speed/speedBase);
+  const intScore = Math.floor(score);
+  
+  // Fixed: Score sound timing
+  if(intScore > 0 && intScore % 100 === 0 && intScore !== lastScoreCheck){ 
+    playSound('score'); 
+    lastScoreCheck = intScore;
+  }
+  
+  scoreEl.textContent = intScore;
+
+  // Fixed: Day/night cycle
+  const cycle = Math.floor(intScore / 700); // Changed to 700 for smoother transitions
+  if(cycle !== lastCycle){
+    night = (cycle % 2 === 1);
+    lastCycle = cycle;
+  }
+
+  draw(); 
+  requestAnimationFrame(update);
+}
+
+function draw(){
+  // Clear canvas
+  ctx.fillStyle = night ? '#2c2c54' : '#87CEEB';
+  ctx.fillRect(0, 0, GAME_W, GAME_H);
+  
+  // Draw background (NOT scaled)
+  if(night && sprites.bg.night){
+    ctx.drawImage(sprites.bg.night,0,0,GAME_W,GAME_H);
+  }
+  else if(sprites.bg.day){
+    ctx.drawImage(sprites.bg.day,0,0,GAME_W,GAME_H);
+  }
+
+  // Draw clouds (NOT scaled)
+  for(const c of clouds) c.draw();
+
+  // Draw sun/moon (NOT scaled)
+  if(night && sprites.moon) ctx.drawImage(sprites.moon,GAME_W-100,40,40,40);
+  else if(sprites.sun) ctx.drawImage(sprites.sun,GAME_W-100,40,40,40);
+
+  // ✅ Apply zoom for gameplay
+  const zoom = 1.1; // change this number to zoom more/less
+  ctx.save();
+  ctx.scale(zoom, zoom);
+  ctx.translate(-(GAME_W*(zoom-1))/2/zoom, -(GAME_H*(zoom-1))/2/zoom); 
+  // above line keeps the zoom centered
+
+  // Draw ground
+  if(sprites.ground){
+    const groundWidth = sprites.ground.width;
+    const offset = (frame * speed * 0.5) % groundWidth;
+    for(let x = -offset; x < GAME_W + groundWidth; x += groundWidth){
+      ctx.drawImage(sprites.ground, Math.floor(x), GAME_H-60);
+    }
+  }
+
+  // Draw dino, obstacles, powerups
+  drawDinoWithWeapon();
+  for(const o of obstacles) o.draw();
+  for(const p of powerups) p.draw();
+
+  ctx.restore(); // end zoom scaling
+
+  // Draw powerup status (NOT scaled)
+  if(activePowerup && powerupTimer > 0) {
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(10, 10, 200, 40);
+    ctx.fillStyle = '#fff';
+    ctx.font = '16px monospace';
+    ctx.fillText(`${activePowerup.toUpperCase()}: ${Math.ceil(powerupTimer/60)}s`, 20, 35);
+  }
+}
+
+
+// Initialize game
+overlay.style.display='flex'; 
+overlay.textContent='Press Space / ↑ or Tap to Start';
+requestAnimationFrame(update);
+  </script>
+</body>
+</html>
