@@ -671,7 +671,7 @@ function update(){
   }
   
   // Fixed: Smoother, gradual speed increase
-  speed = speedBase + Math.min(4, score/800); // Slower progression, max +4 speed
+  speed = speedBase + Math.min(3, score/600); // Slower progression, max +4 speed
   
   spawnObstacleIfNeeded(); 
   spawnCloudIfNeeded();
